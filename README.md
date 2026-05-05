@@ -23,6 +23,16 @@ streamlit run app.py
 
 Open the local Streamlit URL shown in the terminal, upload both Excel files, then download the ranked output.
 
+## Deploy On Render
+
+This repo includes `render.yaml` for Render Blueprint deploys.
+
+Use these settings if creating the service manually:
+
+- Runtime: Python
+- Build command: `pip install -r requirements.txt`
+- Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`
+
 ## Scoring
 
 Accounts are scored with these signals:
