@@ -31,7 +31,7 @@ Use these settings if creating the service manually:
 
 - Runtime: Python
 - Build command: `pip install -r requirements.txt`
-- Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`
+- Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false`
 
 ## Scoring
 

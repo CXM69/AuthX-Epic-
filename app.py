@@ -92,13 +92,13 @@ def main() -> None:
 
     if not epic_file or not ehr_file:
         st.info("Upload both Excel files to generate the ranked account list.")
-        st.stop()
+        return
 
     try:
         ranked_accounts, summary = build_ranked_accounts(epic_file, ehr_file)
     except Exception as exc:
         st.error(f"Unable to process the uploaded files: {exc}")
-        st.stop()
+        return
 
     render_summary(summary)
 
