@@ -1,8 +1,13 @@
-# AuthX Epic Targeting Engine
+# AuthX Epic Front-Door Targeting Engine
 
-A Streamlit app for ranking health system accounts from uploaded Excel workbooks.
+A simple Streamlit MVP that helps sales teams rank healthcare accounts for AuthX as the Epic front-door authentication and access layer.
 
-The app reads every worksheet from each uploaded workbook, normalizes account names, deduplicates accounts, flags Epic and Imprivata signals, calculates fit scores from 0 to 100, assigns priority scores, and exports a ranked Excel workbook.
+The app reads every worksheet from:
+
+- `EPIC Organization list.xlsx`
+- `Health Systems by EHR.xlsx`
+
+It normalizes account names, deduplicates accounts across tabs, identifies Epic and competitive signals, scores each account from 0 to 100, recommends the best first buyer role, and exports a ranked Excel workbook.
 
 ## Setup
 
@@ -12,53 +17,44 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run
+## Run Locally
 
 ```bash
 streamlit run app.py
 ```
 
-Open the local Streamlit URL shown in the terminal, upload one or more Excel files, click `Generate ranked accounts`, then download the ranked output.
+Open the local Streamlit URL shown in the terminal, upload both Excel workbooks, click `Run scoring`, then download the ranked output.
 
-## Deploy On Render
+## Scoring Model
 
-This repo includes `render.yaml` for Render Blueprint deploys.
+- Epic Status: 25 points
+- Timing Trigger: 20 points
+- Enterprise Value: 15 points
+- Imprivata / Competitive Signal: 15 points
+- Front-Door Workflow Fit: 10 points
+- Security / Compliance Urgency: 10 points
+- Buyer Role Fit: 5 points
 
-Use these settings if creating the service manually:
+## Tiers
 
-- Runtime: Python
-- Build command: `pip install -r requirements.txt`
-- Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`
+- Tier 1: 85-100
+- Tier 2: 70-84
+- Tier 3: 50-69
+- Hold: 30-49
+- Exclude: 0-29
 
-## Scoring
+## Guardrail
 
-Accounts are scored with these signals:
+AuthX is positioned as the authentication and access layer around Epic: workstation access, SSO, MFA, badge tap, biometrics, passkeys, VDI/thin-client access, and step-up re-authentication.
 
-- Epic customer: 35 points
-- New Epic system signal: 30 points
-- Imprivata customer signal: 20 points
-- Multiple source files: up to 10 points
-- Multiple source tabs: up to 5 points
-- State or region present: 3 points
+Do not position AuthX as replacing Epic role assignment, identity governance, provisioning, deprovisioning, or internal Epic authorization.
 
-Fit scores are capped at 100. Accounts with exclude signals receive a fit score of 0 and keep `Exclude Flag` marked true.
+## Excel Export
 
-## Priority Scores
+The downloaded workbook includes:
 
-- `1`: highest priority, fit score of 60 or higher
-- `2`: secondary priority, fit score of 40 to 59
-- `Hold`: lower priority, fit score below 40
-
-The `Exclude Flag` column separately marks accounts with exclusion signals.
-
-## Expected Columns
-
-The app automatically looks for common account-name columns such as:
-
-- `Account Name`
-- `Organization`
-- `Health System`
-- `Customer`
-- `Name`
-
-It also detects common EHR, status, and state columns when present. If an uploaded workbook uses different names, update the column candidate lists in `scoring.py`.
+- `All Scored Accounts`
+- `Tier 1 Targets`
+- `Tier 2 Targets`
+- `Role Strategy`
+- `Scoring Summary`
