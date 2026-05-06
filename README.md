@@ -1,9 +1,6 @@
 # AuthX Epic Targeting Engine
 
-A Streamlit app for ranking health system accounts from:
-
-- `EPIC Organization list.xlsx`
-- `Health Systems by EHR.xlsx`
+A Streamlit app for ranking health system accounts from any two uploaded Excel workbooks.
 
 The app reads every worksheet from both workbooks, normalizes account names, deduplicates accounts, flags Epic and Imprivata signals, scores accounts from 0 to 100, assigns targeting tiers, and exports a ranked Excel workbook.
 
@@ -21,7 +18,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Open the local Streamlit URL shown in the terminal, upload both Excel files, click `Generate ranked accounts`, then download the ranked output.
+Open the local Streamlit URL shown in the terminal, upload any two Excel files, click `Generate ranked accounts`, then download the ranked output.
 
 ## Deploy On Render
 

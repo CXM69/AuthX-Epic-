@@ -59,12 +59,12 @@ def render_filters(ranked: pd.DataFrame) -> pd.DataFrame:
     return filtered
 
 
-def uploaded_file_signature(epic_file, ehr_file) -> tuple[str, int, str, int]:
+def uploaded_file_signature(primary_file, secondary_file) -> tuple[str, int, str, int]:
     return (
-        epic_file.name,
-        int(getattr(epic_file, "size", 0) or 0),
-        ehr_file.name,
-        int(getattr(ehr_file, "size", 0) or 0),
+        primary_file.name,
+        int(getattr(primary_file, "size", 0) or 0),
+        secondary_file.name,
+        int(getattr(secondary_file, "size", 0) or 0),
     )
 
 
@@ -82,40 +82,45 @@ def main() -> None:
     st.title("AuthX Epic Targeting Engine")
 
     st.write(
-        "Upload the EPIC organization list and Health Systems by EHR workbook to rank target accounts."
+        "Upload any two Excel workbooks to rank target accounts."
     )
 
     with st.sidebar:
         st.header("Uploads")
-        epic_file = st.file_uploader(
-            "EPIC Organization list.xlsx",
+        primary_file = st.file_uploader(
+            "Excel workbook 1",
             type=["xlsx"],
-            key="epic_file",
+            key="primary_file",
         )
-        ehr_file = st.file_uploader(
-            "Health Systems by EHR.xlsx",
+        secondary_file = st.file_uploader(
+            "Excel workbook 2",
             type=["xlsx"],
-            key="ehr_file",
+            key="secondary_file",
         )
 
         st.divider()
-        st.caption("The app reads every worksheet from both uploaded files.")
+        st.caption("The app reads every worksheet from both uploaded Excel files.")
 
-    if not epic_file or not ehr_file:
+    if not primary_file or not secondary_file:
         st.info("Upload both Excel files to generate the ranked account list.")
         return
 
-    signature = uploaded_file_signature(epic_file, ehr_file)
+    signature = uploaded_file_signature(primary_file, secondary_file)
     if st.session_state.get("uploaded_file_signature") != signature:
         clear_previous_results()
         st.session_state["uploaded_file_signature"] = signature
 
-    st.success(f"Files uploaded: {epic_file.name} and {ehr_file.name}")
+    st.success(f"Files uploaded: {primary_file.name} and {secondary_file.name}")
 
     if st.button("Generate ranked accounts", type="primary"):
         with st.spinner("Reading worksheets, deduplicating accounts, and scoring targets..."):
             try:
-                ranked_accounts, summary = build_ranked_accounts(epic_file, ehr_file)
+                ranked_accounts, summary = build_ranked_accounts(
+                    primary_file,
+                    secondary_file,
+                    primary_label=primary_file.name,
+                    secondary_label=secondary_file.name,
+                )
                 excel_bytes = dataframe_to_excel_bytes(ranked_accounts, summary)
             except Exception as exc:
                 clear_previous_results()

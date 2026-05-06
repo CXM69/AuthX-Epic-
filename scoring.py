@@ -350,12 +350,17 @@ def assign_priority_score(row: pd.Series) -> str:
     return "Hold"
 
 
-def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.DataFrame, dict[str, int]]:
-    epic_raw = read_all_tabs(SourceConfig("EPIC Organization list.xlsx", epic_file))
-    ehr_raw = read_all_tabs(SourceConfig("Health Systems by EHR.xlsx", ehr_file))
+def build_ranked_accounts(
+    primary_file: BinaryIO,
+    secondary_file: BinaryIO,
+    primary_label: str = "Workbook 1",
+    secondary_label: str = "Workbook 2",
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    epic_raw = read_all_tabs(SourceConfig(primary_label, primary_file))
+    ehr_raw = read_all_tabs(SourceConfig(secondary_label, secondary_file))
 
-    epic = prepare_source(epic_raw, "Epic Organization List")
-    ehr = prepare_source(ehr_raw, "Health Systems by EHR")
+    epic = prepare_source(epic_raw, "Workbook 1")
+    ehr = prepare_source(ehr_raw, "Workbook 2")
     combined = pd.concat([epic, ehr], ignore_index=True, sort=False)
 
     if combined.empty:
@@ -397,9 +402,7 @@ def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.D
         }
     )
 
-    ranked["Epic Customer"] = ranked["Source Text"].str.contains("epic", case=False, na=False) | ranked[
-        "Sources"
-    ].str.contains("EPIC Organization list", case=False, na=False)
+    ranked["Epic Customer"] = ranked["Source Text"].str.contains("epic", case=False, na=False)
     ranked["New Epic System"] = ranked["Source Text"].str.contains(
         "new epic|implementation|implementing|migration|go live|go-live|installing|new system",
         case=False,
