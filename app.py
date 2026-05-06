@@ -64,7 +64,6 @@ def render_filters(ranked: pd.DataFrame) -> pd.DataFrame:
 def main() -> None:
     st.set_page_config(
         page_title="AuthX Epic Targeting Engine",
-        page_icon="AX",
         layout="wide",
     )
 
