@@ -5,7 +5,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from scoring import build_ranked_accounts, dataframe_to_excel_bytes
+from scoring import SourceConfig, build_ranked_accounts_from_sources, dataframe_to_excel_bytes
 
 
 def metric_card(label: str, value: int) -> None:
@@ -59,13 +59,24 @@ def render_filters(ranked: pd.DataFrame) -> pd.DataFrame:
     return filtered
 
 
-def uploaded_file_signature(primary_file, secondary_file) -> tuple[str, int, str, int]:
-    return (
-        primary_file.name,
-        int(getattr(primary_file, "size", 0) or 0),
-        secondary_file.name,
-        int(getattr(secondary_file, "size", 0) or 0),
+def uploaded_file_signature(uploaded_files) -> tuple[tuple[str, int], ...]:
+    return tuple(
+        (file.name, int(getattr(file, "size", 0) or 0))
+        for file in uploaded_files
     )
+
+
+def render_uploaded_files(uploaded_files) -> None:
+    files_frame = pd.DataFrame(
+        [
+            {
+                "File": file.name,
+                "Size KB": round((int(getattr(file, "size", 0) or 0) / 1024), 1),
+            }
+            for file in uploaded_files
+        ]
+    )
+    st.dataframe(files_frame, use_container_width=True, hide_index=True)
 
 
 def clear_previous_results() -> None:
@@ -82,44 +93,33 @@ def main() -> None:
     st.title("AuthX Epic Targeting Engine")
 
     st.write(
-        "Upload any two Excel workbooks to rank target accounts."
+        "Upload Excel workbooks to rank target accounts."
     )
 
-    with st.sidebar:
-        st.header("Uploads")
-        primary_file = st.file_uploader(
-            "Excel workbook 1",
-            type=["xlsx"],
-            key="primary_file",
-        )
-        secondary_file = st.file_uploader(
-            "Excel workbook 2",
-            type=["xlsx"],
-            key="secondary_file",
-        )
+    uploaded_files = st.file_uploader(
+        "Upload Excel workbooks",
+        type=["xlsx"],
+        accept_multiple_files=True,
+        key="uploaded_files",
+    )
 
-        st.divider()
-        st.caption("The app reads every worksheet from both uploaded Excel files.")
-
-    if not primary_file or not secondary_file:
-        st.info("Upload both Excel files to generate the ranked account list.")
+    if not uploaded_files:
+        st.info("Upload one or more Excel files to generate the ranked account list.")
         return
 
-    signature = uploaded_file_signature(primary_file, secondary_file)
+    st.subheader("Uploaded Documents")
+    render_uploaded_files(uploaded_files)
+
+    signature = uploaded_file_signature(uploaded_files)
     if st.session_state.get("uploaded_file_signature") != signature:
         clear_previous_results()
         st.session_state["uploaded_file_signature"] = signature
 
-    st.success(f"Files uploaded: {primary_file.name} and {secondary_file.name}")
-
     if st.button("Generate ranked accounts", type="primary"):
         with st.spinner("Reading worksheets, deduplicating accounts, and scoring targets..."):
             try:
-                ranked_accounts, summary = build_ranked_accounts(
-                    primary_file,
-                    secondary_file,
-                    primary_label=primary_file.name,
-                    secondary_label=secondary_file.name,
+                ranked_accounts, summary = build_ranked_accounts_from_sources(
+                    [SourceConfig(file.name, file) for file in uploaded_files]
                 )
                 excel_bytes = dataframe_to_excel_bytes(ranked_accounts, summary)
             except Exception as exc:
@@ -133,7 +133,7 @@ def main() -> None:
         st.success(f"Generated ranked list with {summary['total_accounts']:,} accounts.")
 
     if "ranked_accounts" not in st.session_state:
-        st.info("Both files are uploaded. Click Generate ranked accounts to create the output.")
+        st.info("Files are uploaded. Click Generate ranked accounts to create the output.")
         return
 
     ranked_accounts = st.session_state["ranked_accounts"]

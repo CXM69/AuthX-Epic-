@@ -350,18 +350,17 @@ def assign_priority_score(row: pd.Series) -> str:
     return "Hold"
 
 
-def build_ranked_accounts(
-    primary_file: BinaryIO,
-    secondary_file: BinaryIO,
-    primary_label: str = "Workbook 1",
-    secondary_label: str = "Workbook 2",
-) -> tuple[pd.DataFrame, dict[str, int]]:
-    epic_raw = read_all_tabs(SourceConfig(primary_label, primary_file))
-    ehr_raw = read_all_tabs(SourceConfig(secondary_label, secondary_file))
+def build_ranked_accounts_from_sources(sources: list[SourceConfig]) -> tuple[pd.DataFrame, dict[str, int]]:
+    if not sources:
+        raise ValueError("Upload at least one Excel workbook.")
 
-    epic = prepare_source(epic_raw, "Workbook 1")
-    ehr = prepare_source(ehr_raw, "Workbook 2")
-    combined = pd.concat([epic, ehr], ignore_index=True, sort=False)
+    prepared_sources: list[pd.DataFrame] = []
+
+    for index, source in enumerate(sources, start=1):
+        raw = read_all_tabs(source)
+        prepared_sources.append(prepare_source(raw, f"Workbook {index}"))
+
+    combined = pd.concat(prepared_sources, ignore_index=True, sort=False)
 
     if combined.empty:
         raise ValueError("No usable account rows were found in the uploaded workbooks.")
@@ -370,6 +369,8 @@ def build_ranked_accounts(
         combined["EHR"].fillna("").astype(str)
         + " "
         + combined["Status"].fillna("").astype(str)
+        + " "
+        + combined["Source File"].fillna("").astype(str)
         + " "
         + combined["Source Tab"].fillna("").astype(str)
         + " "
@@ -465,6 +466,20 @@ def build_ranked_accounts(
     }
 
     return ranked, summary
+
+
+def build_ranked_accounts(
+    primary_file: BinaryIO,
+    secondary_file: BinaryIO,
+    primary_label: str = "Workbook 1",
+    secondary_label: str = "Workbook 2",
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    return build_ranked_accounts_from_sources(
+        [
+            SourceConfig(primary_label, primary_file),
+            SourceConfig(secondary_label, secondary_file),
+        ]
+    )
 
 
 def dataframe_to_excel_bytes(ranked: pd.DataFrame, summary: dict[str, int]) -> bytes:
