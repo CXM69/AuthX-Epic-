@@ -44,15 +44,15 @@ Accounts are scored with these signals:
 - Multiple source tabs: up to 5 points
 - State or region present: 3 points
 
-Scores are capped at 100. Accounts with exclude signals receive a score of 0 and are assigned `Exclude`.
+Fit scores are capped at 100. Accounts with exclude signals receive a fit score of 0 and keep `Exclude Flag` marked true.
 
 ## Tiers
 
-- `Tier 1`: score of 80 or higher
-- `Tier 2`: score of 60 to 79
-- `Tier 3`: score of 40 to 59
-- `Hold`: score below 40
-- `Exclude`: account has an exclusion signal
+- `1`: highest priority, fit score of 60 or higher
+- `2`: secondary priority, fit score of 40 to 59
+- `Hold`: lower priority, fit score below 40
+
+The `Exclude Flag` column separately marks accounts with exclusion signals.
 
 ## Expected Columns
 

@@ -341,17 +341,12 @@ def score_account(row: pd.Series) -> int:
     return max(0, min(100, score))
 
 
-def assign_tier(row: pd.Series) -> str:
-    if row["Exclude Flag"]:
-        return "Exclude"
-
-    score = int(row["Score"])
-    if score >= 80:
-        return "Tier 1"
+def assign_priority_score(row: pd.Series) -> str:
+    score = int(row["Fit Score"])
     if score >= 60:
-        return "Tier 2"
+        return "1"
     if score >= 40:
-        return "Tier 3"
+        return "2"
     return "Hold"
 
 
@@ -424,12 +419,13 @@ def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.D
         na=False,
     )
 
-    ranked["Score"] = ranked.apply(score_account, axis=1)
-    ranked["Tier"] = ranked.apply(assign_tier, axis=1)
+    ranked["Fit Score"] = ranked.apply(score_account, axis=1)
+    ranked["Priority Score"] = ranked.apply(assign_priority_score, axis=1)
+    ranked["Priority Sort"] = ranked["Priority Score"].map({"1": 1, "2": 2, "Hold": 3}).fillna(3)
 
     ranked = ranked.sort_values(
-        by=["Score", "Epic Customer", "New Epic System", "Imprivata Customer", "Account Name"],
-        ascending=[False, False, False, False, True],
+        by=["Priority Sort", "Fit Score", "Epic Customer", "New Epic System", "Imprivata Customer", "Account Name"],
+        ascending=[True, False, False, False, False, True],
     ).reset_index(drop=True)
     ranked.insert(0, "Rank", ranked.index + 1)
 
@@ -437,8 +433,8 @@ def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.D
         "Rank",
         "Account Name",
         "Normalized Account Name",
-        "Tier",
-        "Score",
+        "Priority Score",
+        "Fit Score",
         "Epic Customer",
         "New Epic System",
         "Imprivata Customer",
@@ -456,11 +452,10 @@ def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.D
 
     summary = {
         "total_accounts": int(len(ranked)),
-        "tier_1": int((ranked["Tier"] == "Tier 1").sum()),
-        "tier_2": int((ranked["Tier"] == "Tier 2").sum()),
-        "tier_3": int((ranked["Tier"] == "Tier 3").sum()),
-        "hold": int((ranked["Tier"] == "Hold").sum()),
-        "exclude": int((ranked["Tier"] == "Exclude").sum()),
+        "priority_1": int((ranked["Priority Score"] == "1").sum()),
+        "priority_2": int((ranked["Priority Score"] == "2").sum()),
+        "hold": int((ranked["Priority Score"] == "Hold").sum()),
+        "exclude": int(ranked["Exclude Flag"].sum()),
         "epic_customers": int(ranked["Epic Customer"].sum()),
         "new_epic_systems": int(ranked["New Epic System"].sum()),
         "imprivata_customers": int(ranked["Imprivata Customer"].sum()),
@@ -478,11 +473,10 @@ def dataframe_to_excel_bytes(ranked: pd.DataFrame, summary: dict[str, int]) -> b
         summary_frame = pd.DataFrame(
             [
                 ("Total Accounts", summary["total_accounts"]),
-                ("Tier 1", summary["tier_1"]),
-                ("Tier 2", summary["tier_2"]),
-                ("Tier 3", summary["tier_3"]),
+                ("Priority 1", summary["priority_1"]),
+                ("Priority 2", summary["priority_2"]),
                 ("Hold", summary["hold"]),
-                ("Exclude", summary["exclude"]),
+                ("Excluded", summary["exclude"]),
                 ("Epic Customers", summary["epic_customers"]),
                 ("New Epic Systems", summary["new_epic_systems"]),
                 ("Imprivata Customers", summary["imprivata_customers"]),
