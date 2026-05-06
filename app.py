@@ -61,6 +61,20 @@ def render_filters(ranked: pd.DataFrame) -> pd.DataFrame:
     return filtered
 
 
+def uploaded_file_signature(epic_file, ehr_file) -> tuple[str, int, str, int]:
+    return (
+        epic_file.name,
+        int(getattr(epic_file, "size", 0) or 0),
+        ehr_file.name,
+        int(getattr(ehr_file, "size", 0) or 0),
+    )
+
+
+def clear_previous_results() -> None:
+    for key in ["ranked_accounts", "summary", "excel_bytes"]:
+        st.session_state.pop(key, None)
+
+
 def main() -> None:
     st.set_page_config(
         page_title="AuthX Epic Targeting Engine",
@@ -93,11 +107,35 @@ def main() -> None:
         st.info("Upload both Excel files to generate the ranked account list.")
         return
 
-    try:
-        ranked_accounts, summary = build_ranked_accounts(epic_file, ehr_file)
-    except Exception as exc:
-        st.error(f"Unable to process the uploaded files: {exc}")
+    signature = uploaded_file_signature(epic_file, ehr_file)
+    if st.session_state.get("uploaded_file_signature") != signature:
+        clear_previous_results()
+        st.session_state["uploaded_file_signature"] = signature
+
+    st.success(f"Files uploaded: {epic_file.name} and {ehr_file.name}")
+
+    if st.button("Generate ranked accounts", type="primary"):
+        with st.spinner("Reading worksheets, deduplicating accounts, and scoring targets..."):
+            try:
+                ranked_accounts, summary = build_ranked_accounts(epic_file, ehr_file)
+                excel_bytes = dataframe_to_excel_bytes(ranked_accounts, summary)
+            except Exception as exc:
+                clear_previous_results()
+                st.error(f"Unable to process the uploaded files: {exc}")
+                return
+
+        st.session_state["ranked_accounts"] = ranked_accounts
+        st.session_state["summary"] = summary
+        st.session_state["excel_bytes"] = excel_bytes
+        st.success(f"Generated ranked list with {summary['total_accounts']:,} accounts.")
+
+    if "ranked_accounts" not in st.session_state:
+        st.info("Both files are uploaded. Click Generate ranked accounts to create the output.")
         return
+
+    ranked_accounts = st.session_state["ranked_accounts"]
+    summary = st.session_state["summary"]
+    excel_bytes = st.session_state["excel_bytes"]
 
     render_summary(summary)
 
@@ -122,7 +160,6 @@ def main() -> None:
         },
     )
 
-    excel_bytes = dataframe_to_excel_bytes(ranked_accounts, summary)
     date_stamp = datetime.now().strftime("%Y%m%d")
 
     st.download_button(

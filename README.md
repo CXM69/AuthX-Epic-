@@ -21,7 +21,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Open the local Streamlit URL shown in the terminal, upload both Excel files, then download the ranked output.
+Open the local Streamlit URL shown in the terminal, upload both Excel files, click `Generate ranked accounts`, then download the ranked output.
 
 ## Deploy On Render
 

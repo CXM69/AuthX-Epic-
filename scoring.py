@@ -11,8 +11,8 @@ from openpyxl.utils import get_column_letter
 
 
 ACCOUNT_COLUMN_CANDIDATES = [
-    "account",
     "account name",
+    "account",
     "organization",
     "organization name",
     "org name",
@@ -65,6 +65,11 @@ ORG_WORD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+ORGANIZATION_SIGNAL_PATTERN = re.compile(
+    r"\b(health|hospital|medical|clinic|system|systems|care|center|centre|regional|memorial|university|children|county|network|partners|group|foundation)\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class SourceConfig:
@@ -105,7 +110,7 @@ def read_all_tabs(source: SourceConfig) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
 
     for sheet_name in workbook.sheet_names:
-        frame = pd.read_excel(workbook, sheet_name=sheet_name, dtype=object)
+        frame = read_sheet_with_header_detection(workbook, sheet_name)
         frame = frame.dropna(how="all")
         if frame.empty:
             continue
@@ -121,8 +126,78 @@ def read_all_tabs(source: SourceConfig) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True, sort=False)
 
 
+def read_sheet_with_header_detection(workbook: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
+    raw = pd.read_excel(workbook, sheet_name=sheet_name, header=None, dtype=object)
+    raw = raw.dropna(axis=0, how="all").dropna(axis=1, how="all")
+    if raw.empty:
+        return pd.DataFrame()
+
+    header_row = detect_header_row(raw)
+    if header_row is None:
+        frame = raw.copy()
+        frame.columns = [f"Column {index + 1}" for index in range(len(frame.columns))]
+        return frame
+
+    header_values = raw.iloc[header_row].tolist()
+    frame = raw.iloc[header_row + 1 :].copy()
+    frame.columns = make_unique_columns(header_values)
+    return frame.dropna(axis=0, how="all")
+
+
+def detect_header_row(raw: pd.DataFrame, max_rows: int = 15) -> int | None:
+    candidates = (
+        ACCOUNT_COLUMN_CANDIDATES
+        + EHR_COLUMN_CANDIDATES
+        + STATUS_COLUMN_CANDIDATES
+        + STATE_COLUMN_CANDIDATES
+    )
+    normalized_candidates = {normalize_column_name(candidate) for candidate in candidates}
+    best_row: int | None = None
+    best_score = 0
+
+    for row_index in range(min(max_rows, len(raw))):
+        values = [normalize_column_name(value) for value in raw.iloc[row_index].tolist()]
+        values = [value for value in values if value and not value.startswith("unnamed")]
+        if not values:
+            continue
+
+        score = 0
+        for value in values:
+            if value in normalized_candidates:
+                score += 5
+            elif any(candidate and candidate in value for candidate in normalized_candidates if len(candidate) > 2):
+                score += 2
+
+        if score > best_score:
+            best_score = score
+            best_row = row_index
+
+    return best_row if best_score else None
+
+
+def make_unique_columns(values: list[object]) -> list[str]:
+    columns: list[str] = []
+    counts: dict[str, int] = {}
+
+    for index, value in enumerate(values):
+        column = str(value).strip() if not pd.isna(value) else ""
+        if not column or column.lower().startswith("unnamed"):
+            column = f"Column {index + 1}"
+
+        counts[column] = counts.get(column, 0) + 1
+        if counts[column] > 1:
+            column = f"{column} {counts[column]}"
+        columns.append(column)
+
+    return columns
+
+
 def find_column(frame: pd.DataFrame, candidates: list[str]) -> str | None:
-    normalized_lookup = {normalize_column_name(column): column for column in frame.columns}
+    normalized_lookup = {
+        normalize_column_name(column): column
+        for column in frame.columns
+        if not normalize_column_name(column).startswith("unnamed")
+    }
     normalized_candidates = [normalize_column_name(candidate) for candidate in candidates]
 
     for normalized_candidate in normalized_candidates:
@@ -131,6 +206,8 @@ def find_column(frame: pd.DataFrame, candidates: list[str]) -> str | None:
 
     for column in frame.columns:
         normalized = normalize_column_name(column)
+        if normalized.startswith("unnamed"):
+            continue
         normalized_tokens = set(normalized.split())
         for candidate in normalized_candidates:
             if len(candidate) <= 2 and candidate in normalized_tokens:
@@ -139,6 +216,47 @@ def find_column(frame: pd.DataFrame, candidates: list[str]) -> str | None:
                 return column
 
     return None
+
+
+def infer_account_column(frame: pd.DataFrame) -> str | None:
+    ignored_columns = {
+        "source file",
+        "source tab",
+        "source type",
+    }
+    best_column: str | None = None
+    best_score = 0.0
+
+    for column in frame.columns:
+        normalized_column = normalize_column_name(column)
+        if normalized_column in ignored_columns:
+            continue
+
+        values = frame[column].dropna().astype(str).str.strip()
+        values = values[
+            values.ne("")
+            & ~values.str.lower().isin({"nan", "none", "null", "n/a", "na"})
+        ].head(300)
+        if values.empty:
+            continue
+
+        useful_values = values[
+            values.str.len().between(3, 120)
+            & ~values.str.fullmatch(r"[-+]?\d+(\.\d+)?", na=False)
+        ]
+        if useful_values.empty:
+            continue
+
+        signal_hits = useful_values.str.contains(ORGANIZATION_SIGNAL_PATTERN, na=False).sum()
+        uniqueness = useful_values.nunique() / max(len(useful_values), 1)
+        average_length = min(useful_values.str.len().mean(), 60)
+        score = (len(useful_values) * 2) + (signal_hits * 8) + (uniqueness * 20) + average_length
+
+        if score > best_score:
+            best_score = score
+            best_column = column
+
+    return best_column
 
 
 def prepare_source(frame: pd.DataFrame, source_type: str) -> pd.DataFrame:
@@ -158,10 +276,9 @@ def prepare_source(frame: pd.DataFrame, source_type: str) -> pd.DataFrame:
 
     account_column = find_column(frame, ACCOUNT_COLUMN_CANDIDATES)
     if account_column is None:
-        raise ValueError(
-            f"Could not find an account/name column in {source_type}. "
-            "Expected a column such as Account Name, Organization, Health System, Customer, or Name."
-        )
+        account_column = infer_account_column(frame)
+    if account_column is None:
+        raise ValueError(f"Could not find a usable account/name column in {source_type}.")
 
     ehr_column = find_column(frame, EHR_COLUMN_CANDIDATES)
     status_column = find_column(frame, STATUS_COLUMN_CANDIDATES)
