@@ -7,6 +7,4 @@ enableWebsocketCompression = false
 fileWatcherType = "none"
 
 [browser]
-serverAddress = "authx-epic.onrender.com"
-serverPort = 443
 gatherUsageStats = false
