@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import BytesIO
 import re
-from typing import BinaryIO
+from typing import BinaryIO, Iterable
 
 import pandas as pd
 from openpyxl.styles import Font, PatternFill
@@ -134,6 +134,36 @@ class SourceConfig:
     label: str
     uploaded_file: BinaryIO
     source_type: str
+
+
+def infer_source_type(label: str) -> str:
+    normalized = normalize_column_name(label)
+
+    if "imprivata" in normalized:
+        return "Imprivata Customer List"
+    if "health systems by ehr" in normalized or "ehr" in normalized or "emr" in normalized:
+        return "Health Systems by EHR"
+    if "epic organization" in normalized or "epic org" in normalized or "epic customer" in normalized:
+        return "EPIC Organization List"
+    if "new epic" in normalized or "epic implementation" in normalized or "epic migration" in normalized:
+        return "New Epic Systems List"
+    if "epic" in normalized and "list" in normalized:
+        return "EPIC Organization List"
+    return "Uploaded Workbook"
+
+
+def source_configs_from_uploads(uploaded_files: Iterable[BinaryIO]) -> list[SourceConfig]:
+    sources: list[SourceConfig] = []
+    for index, uploaded_file in enumerate(uploaded_files, start=1):
+        label = clean_text(getattr(uploaded_file, "name", "")) or f"Workbook {index}"
+        sources.append(
+            SourceConfig(
+                label=label,
+                uploaded_file=uploaded_file,
+                source_type=infer_source_type(label),
+            )
+        )
+    return sources
 
 
 def normalize_column_name(column: object) -> str:
@@ -534,18 +564,37 @@ def missing_data(row: pd.Series) -> str:
     return "; ".join(missing) if missing else "None"
 
 
-def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.DataFrame, dict[str, int]]:
-    sources = [
-        SourceConfig("EPIC Organization list.xlsx", epic_file, "EPIC Organization List"),
-        SourceConfig("Health Systems by EHR.xlsx", ehr_file, "Health Systems by EHR"),
-    ]
-    prepared = [prepare_source(read_all_tabs(source), source.source_type) for source in sources]
+def build_ranked_accounts_from_sources(sources: Iterable[SourceConfig]) -> tuple[pd.DataFrame, dict[str, int]]:
+    source_list = list(sources)
+    if not source_list:
+        raise ValueError("Upload at least one Excel workbook before running scoring.")
+
+    prepared: list[pd.DataFrame] = []
+    skipped_sources: list[str] = []
+
+    for source in source_list:
+        try:
+            source_frame = read_all_tabs(source)
+            prepared_frame = prepare_source(source_frame, source.source_type)
+        except ValueError as exc:
+            skipped_sources.append(f"{source.label}: {exc}")
+            continue
+
+        if prepared_frame.empty:
+            skipped_sources.append(f"{source.label}: no usable account rows found")
+            continue
+        prepared.append(prepared_frame)
+
+    if not prepared:
+        details = f" Skipped sources: {' | '.join(skipped_sources[:3])}" if skipped_sources else ""
+        raise ValueError(f"No usable account rows were found in the uploaded workbooks.{details}")
+
     combined = pd.concat(prepared, ignore_index=True, sort=False)
 
     if combined.empty:
         raise ValueError("No usable account rows were found in the uploaded workbooks.")
 
-    combined["Search Text"] = (
+    combined["Data Text"] = (
         combined["Account Name"].fillna("").astype(str)
         + " "
         + combined["Parent Health System if available"].fillna("").astype(str)
@@ -554,13 +603,16 @@ def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.D
         + " "
         + combined["Status"].fillna("").astype(str)
         + " "
+        + combined["Row Text"].fillna("").astype(str)
+    ).str.lower()
+    combined["Search Text"] = (
+        combined["Data Text"].fillna("").astype(str)
+        + " "
         + combined["Source File"].fillna("").astype(str)
         + " "
         + combined["Source Tab"].fillna("").astype(str)
         + " "
         + combined["Source Type"].fillna("").astype(str)
-        + " "
-        + combined["Row Text"].fillna("").astype(str)
     ).str.lower()
 
     grouped = combined.groupby("Normalized Account Name", dropna=False)
@@ -575,6 +627,7 @@ def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.D
         Source_Types=("Source Type", collapse_values),
         Source_Count=("Source File", "nunique"),
         Source_Tab_Count=("Source Tab", "nunique"),
+        Data_Text=("Data Text", collapse_values),
         Source_Text=("Search Text", collapse_values),
         Account_Name_Variants=("Account Name", collapse_values),
     ).reset_index()
@@ -587,27 +640,35 @@ def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.D
             "Source_Types": "Source Types",
             "Source_Count": "Source Count",
             "Source_Tab_Count": "Source Tab Count",
+            "Data_Text": "Data Text",
             "Source_Text": "Source Text",
             "Account_Name_Variants": "Account Name Variants",
         }
     )
 
-    ranked["Existing Epic Customer"] = ranked["Source Text"].str.contains("epic", case=False, na=False) | ranked["Source Types"].str.contains("EPIC Organization List", case=False, na=False)
-    ranked["New Epic System"] = ranked["Source Text"].str.contains(NEW_EPIC_PATTERN, na=False)
-    ranked["Imprivata Customer"] = ranked["Source Text"].str.contains(IMPRIVATA_PATTERN, na=False)
-    ranked["Large Health System"] = ranked["Source Text"].str.contains(LARGE_HEALTH_SYSTEM_PATTERN, na=False)
-    ranked["Large Physician Group"] = ranked["Source Text"].str.contains(LARGE_PHYSICIAN_GROUP_PATTERN, na=False)
+    data_text = ranked["Data Text"].fillna("")
+    source_text = ranked["Source Text"].fillna("")
+    source_types = ranked["Source Types"].fillna("")
+    known_epic_source = source_types.str.contains("EPIC Organization List", case=False, na=False)
+    explicit_epic_signal = data_text.str.contains(r"\bepic\b", case=False, regex=True, na=False)
+
+    ranked["New Epic System"] = data_text.str.contains(NEW_EPIC_PATTERN, na=False) | source_text.str.contains(NEW_EPIC_PATTERN, na=False)
+    ranked["Existing Epic Customer"] = (known_epic_source | explicit_epic_signal) & ~ranked["New Epic System"]
+    ranked["Imprivata Customer"] = source_text.str.contains(IMPRIVATA_PATTERN, na=False)
+    ranked["Large Health System"] = source_text.str.contains(LARGE_HEALTH_SYSTEM_PATTERN, na=False)
+    ranked["Large Physician Group"] = source_text.str.contains(LARGE_PHYSICIAN_GROUP_PATTERN, na=False)
     ranked["Non-Epic Migration Opportunity"] = (
         ~ranked["Existing Epic Customer"]
+        & ~ranked["New Epic System"]
         & (
-            ranked["Source Text"].str.contains(NON_EPIC_EHR_PATTERN, na=False)
-            | ranked["Source Text"].str.contains(MIGRATION_PATTERN, na=False)
+            source_text.str.contains(NON_EPIC_EHR_PATTERN, na=False)
+            | source_text.str.contains(MIGRATION_PATTERN, na=False)
         )
     )
-    ranked["Front-Door Workflow Fit Signal"] = ranked["Source Text"].str.contains(FRONT_DOOR_PATTERN, na=False)
-    ranked["Security / Compliance Signal"] = ranked["Source Text"].str.contains(SECURITY_PATTERN, na=False)
-    ranked["Buyer Role Signal"] = ranked["Source Text"].str.contains(BUYER_ROLE_PATTERN, na=False)
-    ranked["Exclude Flag"] = ranked["Source Text"].str.contains(
+    ranked["Front-Door Workflow Fit Signal"] = source_text.str.contains(FRONT_DOOR_PATTERN, na=False)
+    ranked["Security / Compliance Signal"] = source_text.str.contains(SECURITY_PATTERN, na=False)
+    ranked["Buyer Role Signal"] = source_text.str.contains(BUYER_ROLE_PATTERN, na=False)
+    ranked["Exclude Flag"] = source_text.str.contains(
         r"\b(?:exclude|do not contact|dnc|closed|inactive|duplicate only|competitor)\b",
         case=False,
         regex=True,
@@ -669,11 +730,15 @@ def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.D
         "State",
         "Sources",
         "Source Tabs",
+        "Source Types",
         "Account Name Variants",
     ]
     ranked = ranked[output_columns]
 
     summary = {
+        "uploaded_workbooks": int(len(source_list)),
+        "processed_workbooks": int(len(prepared)),
+        "skipped_workbooks": int(len(skipped_sources)),
         "total_accounts": int(len(ranked)),
         "tier_1": int((ranked["Tier"] == "Tier 1").sum()),
         "tier_2": int((ranked["Tier"] == "Tier 2").sum()),
@@ -690,9 +755,20 @@ def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.D
     return ranked, summary
 
 
+def build_ranked_accounts(epic_file: BinaryIO, ehr_file: BinaryIO) -> tuple[pd.DataFrame, dict[str, int]]:
+    sources = [
+        SourceConfig("EPIC Organization list.xlsx", epic_file, "EPIC Organization List"),
+        SourceConfig("Health Systems by EHR.xlsx", ehr_file, "Health Systems by EHR"),
+    ]
+    return build_ranked_accounts_from_sources(sources)
+
+
 def scoring_summary_frame(summary: dict[str, int]) -> pd.DataFrame:
     return pd.DataFrame(
         [
+            ("Uploaded Workbooks", summary.get("uploaded_workbooks", 0)),
+            ("Processed Workbooks", summary.get("processed_workbooks", 0)),
+            ("Skipped Workbooks", summary.get("skipped_workbooks", 0)),
             ("Total Accounts", summary["total_accounts"]),
             ("Tier 1 Targets", summary["tier_1"]),
             ("Tier 2 Targets", summary["tier_2"]),

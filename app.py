@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pandas as pd
 import streamlit as st
 
-from scoring import build_ranked_accounts, dataframe_to_excel_bytes
+from scoring import (
+    build_ranked_accounts_from_sources,
+    dataframe_to_excel_bytes,
+    infer_source_type,
+    source_configs_from_uploads,
+)
 
 
 def metric_card(label: str, value: int) -> None:
@@ -16,35 +22,62 @@ def clear_previous_results() -> None:
         st.session_state.pop(key, None)
 
 
-def file_signature(epic_file, ehr_file) -> tuple[str, int, str, int]:
-    return (
-        epic_file.name,
-        int(getattr(epic_file, "size", 0) or 0),
-        ehr_file.name,
-        int(getattr(ehr_file, "size", 0) or 0),
+def file_signature(uploaded_files) -> tuple[tuple[str, int], ...]:
+    return tuple(
+        (uploaded_file.name, int(getattr(uploaded_file, "size", 0) or 0))
+        for uploaded_file in uploaded_files
+    )
+
+
+def render_uploaded_files(uploaded_files) -> None:
+    rows = [
+        {
+            "File": uploaded_file.name,
+            "Size KB": round((int(getattr(uploaded_file, "size", 0) or 0) / 1024), 1),
+            "Detected Source Type": infer_source_type(uploaded_file.name),
+        }
+        for uploaded_file in uploaded_files
+    ]
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Size KB": st.column_config.NumberColumn("Size KB", format="%.1f"),
+        },
     )
 
 
 def render_summary(summary: dict[str, int]) -> None:
     first_row = st.columns(4)
     with first_row[0]:
-        metric_card("Total Accounts", summary["total_accounts"])
+        metric_card("Uploaded Workbooks", summary.get("uploaded_workbooks", 0))
     with first_row[1]:
-        metric_card("Tier 1", summary["tier_1"])
+        metric_card("Total Accounts", summary["total_accounts"])
     with first_row[2]:
-        metric_card("Tier 2", summary["tier_2"])
+        metric_card("Tier 1", summary["tier_1"])
     with first_row[3]:
-        metric_card("New Epic Systems", summary["new_epic_systems"])
+        metric_card("Tier 2", summary["tier_2"])
 
     second_row = st.columns(4)
     with second_row[0]:
-        metric_card("Existing Epic", summary["existing_epic_customers"])
+        metric_card("Tier 3", summary["tier_3"])
     with second_row[1]:
-        metric_card("Imprivata", summary["imprivata_customers"])
+        metric_card("New Epic Systems", summary["new_epic_systems"])
     with second_row[2]:
-        metric_card("Large Systems", summary["large_health_systems"])
+        metric_card("Existing Epic", summary["existing_epic_customers"])
     with second_row[3]:
+        metric_card("Imprivata", summary["imprivata_customers"])
+
+    third_row = st.columns(4)
+    with third_row[0]:
+        metric_card("Large Systems", summary["large_health_systems"])
+    with third_row[1]:
         metric_card("Migration Opps", summary["migration_opportunities"])
+    with third_row[2]:
+        metric_card("Processed Workbooks", summary.get("processed_workbooks", 0))
+    with third_row[3]:
+        metric_card("Skipped Workbooks", summary.get("skipped_workbooks", 0))
 
 
 def render_top_targets(ranked_accounts) -> None:
@@ -81,38 +114,40 @@ def main() -> None:
 
     st.title("AuthX Epic Front-Door Targeting Engine")
     st.write(
-        "Upload the Epic organization list and EHR workbook to identify the best front-door authentication targets."
+        "Upload one or more Excel workbooks to identify the best healthcare targets for AuthX front-door authentication."
     )
 
-    with st.sidebar:
-        st.header("Upload Workbooks")
-        epic_file = st.file_uploader(
-            "EPIC Organization list.xlsx",
-            type=["xlsx"],
-            key="epic_file",
-        )
-        ehr_file = st.file_uploader(
-            "Health Systems by EHR.xlsx",
-            type=["xlsx"],
-            key="ehr_file",
-        )
-        st.caption("Every worksheet in both workbooks will be read.")
+    uploaded_files = st.file_uploader(
+        "Upload Excel workbooks",
+        type=["xlsx"],
+        accept_multiple_files=True,
+        key="uploaded_files",
+        help="Use any account, EHR, Epic, Imprivata, security, or workflow spreadsheet. Every worksheet is read.",
+    )
+    st.caption(
+        "The original EPIC Organization list and Health Systems by EHR workbooks are supported, but they are not required."
+    )
 
-    if not epic_file or not ehr_file:
-        st.info("Upload both Excel workbooks to run the targeting engine.")
+    if not uploaded_files:
+        clear_previous_results()
+        st.info("Upload at least one Excel workbook to run the targeting engine.")
         return
 
-    current_signature = file_signature(epic_file, ehr_file)
+    st.subheader("Uploaded Workbooks")
+    render_uploaded_files(uploaded_files)
+
+    current_signature = file_signature(uploaded_files)
     if st.session_state.get("file_signature") != current_signature:
         clear_previous_results()
         st.session_state["file_signature"] = current_signature
 
-    st.success(f"Uploaded: {epic_file.name} and {ehr_file.name}")
+    st.success(f"{len(uploaded_files)} workbook(s) ready for scoring.")
 
-    if st.button("Run scoring", type="primary"):
+    if st.button("Generate ranked list", type="primary"):
         with st.spinner("Reading tabs, deduplicating accounts, scoring targets, and building role strategy..."):
             try:
-                ranked_accounts, summary = build_ranked_accounts(epic_file, ehr_file)
+                sources = source_configs_from_uploads(uploaded_files)
+                ranked_accounts, summary = build_ranked_accounts_from_sources(sources)
                 excel_bytes = dataframe_to_excel_bytes(ranked_accounts, summary)
             except Exception as exc:
                 clear_previous_results()
@@ -124,7 +159,7 @@ def main() -> None:
         st.session_state["excel_bytes"] = excel_bytes
 
     if "ranked_accounts" not in st.session_state:
-        st.info("Click Run scoring to generate the ranked target list.")
+        st.info("Click Generate ranked list to create the ranked target list.")
         return
 
     ranked_accounts = st.session_state["ranked_accounts"]

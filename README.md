@@ -2,12 +2,12 @@
 
 A simple Streamlit MVP that helps sales teams rank healthcare accounts for AuthX as the Epic front-door authentication and access layer.
 
-The app reads every worksheet from:
+The app reads every worksheet from one or more uploaded Excel workbooks. The original source files are supported examples, not hard requirements:
 
 - `EPIC Organization list.xlsx`
 - `Health Systems by EHR.xlsx`
 
-It normalizes account names, deduplicates accounts across tabs, identifies Epic and competitive signals, scores each account from 0 to 100, recommends the best first buyer role, and exports a ranked Excel workbook.
+You can also upload other account, EHR, Epic, Imprivata, security, workflow, or target-account spreadsheets. The app normalizes account names, deduplicates accounts across every uploaded tab, identifies Epic and competitive signals, scores each account from 0 to 100, recommends the best first buyer role, and exports a ranked Excel workbook.
 
 ## Setup
 
@@ -23,7 +23,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Open the local Streamlit URL shown in the terminal, upload both Excel workbooks, click `Run scoring`, then download the ranked output.
+Open the local Streamlit URL shown in the terminal, upload one or more Excel workbooks, click `Generate ranked list`, then download the ranked output.
 
 ## Scoring Model
 
