@@ -75,9 +75,9 @@ def render_summary(summary: dict[str, int]) -> None:
     with third_row[1]:
         metric_card("Migration Opps", summary["migration_opportunities"])
     with third_row[2]:
-        metric_card("Processed Workbooks", summary.get("processed_workbooks", 0))
+        metric_card("Processed Tabs", summary.get("processed_tabs", 0))
     with third_row[3]:
-        metric_card("Skipped Workbooks", summary.get("skipped_workbooks", 0))
+        metric_card("Skipped Tabs", summary.get("skipped_tabs", 0))
 
 
 def render_top_targets(ranked_accounts) -> None:

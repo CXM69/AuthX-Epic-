@@ -44,6 +44,20 @@ EHR_COLUMN_CANDIDATES = [
     "source ehr",
 ]
 
+SIZE_COLUMN_CANDIDATES = [
+    "number of physicians",
+    "physicians",
+    "provider count",
+    "providers",
+    "number of providers",
+    "beds",
+    "bed count",
+    "hospitals",
+    "hospital count",
+    "locations",
+    "location count",
+]
+
 STATUS_COLUMN_CANDIDATES = [
     "status",
     "customer status",
@@ -77,7 +91,7 @@ NEW_EPIC_PATTERN = re.compile(
 )
 
 NON_EPIC_EHR_PATTERN = re.compile(
-    r"\b(?:cerner|oracle health|meditech|allscripts|altera|athena|athenahealth|eclinicalworks|ecw|nextgen|greenway|veradigm|scripts)\b",
+    r"\b(?:advanced\s*md|advancedmd|cerner|oracle health|meditech|allscripts|altera|athena|athenahealth|eclinicalworks|ecw|evident|ge|ge healthcare|netsmart|nextgen|greenway|valant|veradigm|scripts)\b",
     re.IGNORECASE,
 )
 
@@ -120,6 +134,7 @@ VDI_PATTERN = re.compile(r"\b(?:vdi|thin client|thin-client|shared workstation|w
 CLINICAL_FRICTION_PATTERN = re.compile(r"\b(?:clinician friction|workflow friction|physician friction|nurse workflow|clinical workflow|provider experience|clinician experience)\b", re.IGNORECASE)
 EPCS_PATTERN = re.compile(r"\b(?:epcs|pharmacy|pharmacist|break glass|break-glass|controlled substance)\b", re.IGNORECASE)
 MODERNIZATION_PATTERN = re.compile(r"\b(?:enterprise modernization|modernization|standardization|consolidation|digital transformation|access modernization)\b", re.IGNORECASE)
+GENERIC_SHEET_NAMES = {"combined", "sheet", "sheet1", "phys groups", "physician groups"}
 
 AUTHX_GUARDRAIL = (
     "Position AuthX as the authentication and access layer around Epic: workstation access, SSO, MFA, "
@@ -149,6 +164,8 @@ def infer_source_type(label: str) -> str:
         return "New Epic Systems List"
     if "epic" in normalized and "list" in normalized:
         return "EPIC Organization List"
+    if NON_EPIC_EHR_PATTERN.search(normalized):
+        return "Health Systems by EHR"
     return "Uploaded Workbook"
 
 
@@ -190,7 +207,14 @@ def clean_text(value: object) -> str:
     return "" if text.lower() in {"nan", "none", "null"} else text
 
 
-def read_all_tabs(source: SourceConfig) -> pd.DataFrame:
+def resolve_sheet_source_type(source: SourceConfig, sheet_name: str) -> str:
+    sheet_source_type = infer_source_type(f"{source.label} {sheet_name}")
+    if sheet_source_type != "Uploaded Workbook":
+        return sheet_source_type
+    return source.source_type
+
+
+def read_source_tabs(source: SourceConfig) -> list[pd.DataFrame]:
     if hasattr(source.uploaded_file, "seek"):
         source.uploaded_file.seek(0)
 
@@ -204,9 +228,14 @@ def read_all_tabs(source: SourceConfig) -> pd.DataFrame:
         frame.columns = [str(column).strip() for column in frame.columns]
         frame["Source File"] = source.label
         frame["Source Tab"] = sheet_name
-        frame["Source Type"] = source.source_type
+        frame["Source Type"] = resolve_sheet_source_type(source, sheet_name)
         frames.append(frame)
 
+    return frames
+
+
+def read_all_tabs(source: SourceConfig) -> pd.DataFrame:
+    frames = read_source_tabs(source)
     return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
 
 
@@ -323,6 +352,43 @@ def row_text(frame: pd.DataFrame) -> pd.Series:
     )
 
 
+def first_frame_value(frame: pd.DataFrame, column: str) -> str:
+    if column not in frame:
+        return ""
+    values = frame[column].dropna().map(clean_text)
+    values = values[values.ne("")]
+    return values.iloc[0] if not values.empty else ""
+
+
+def infer_ehr_from_sheet(frame: pd.DataFrame, source_type: str) -> str:
+    sheet_name = first_frame_value(frame, "Source Tab")
+    if source_type != "Health Systems by EHR":
+        return ""
+    if normalize_column_name(sheet_name) in GENERIC_SHEET_NAMES:
+        return ""
+    return sheet_name if NON_EPIC_EHR_PATTERN.search(sheet_name) else ""
+
+
+def normalize_ehr_value(value: object, source_type: str) -> str:
+    text = clean_text(value)
+    if source_type == "Imprivata Customer List" and IMPRIVATA_PATTERN.search(text):
+        return ""
+    return text
+
+
+def numeric_max_from_text(value: object) -> float:
+    text = clean_text(value)
+    if not text:
+        return 0.0
+    numbers = []
+    for match in re.findall(r"\d[\d,]*(?:\.\d+)?", text):
+        try:
+            numbers.append(float(match.replace(",", "")))
+        except ValueError:
+            continue
+    return max(numbers) if numbers else 0.0
+
+
 def prepare_source(frame: pd.DataFrame, source_type: str) -> pd.DataFrame:
     output_columns = [
         "Account Name",
@@ -331,6 +397,7 @@ def prepare_source(frame: pd.DataFrame, source_type: str) -> pd.DataFrame:
         "EHR",
         "Status",
         "State",
+        "Market Size Signal",
         "Source File",
         "Source Tab",
         "Source Type",
@@ -347,6 +414,7 @@ def prepare_source(frame: pd.DataFrame, source_type: str) -> pd.DataFrame:
     ehr_column = find_column(frame, EHR_COLUMN_CANDIDATES)
     status_column = find_column(frame, STATUS_COLUMN_CANDIDATES)
     state_column = find_column(frame, STATE_COLUMN_CANDIDATES)
+    size_column = find_column(frame, SIZE_COLUMN_CANDIDATES)
 
     prepared = pd.DataFrame()
     prepared["Account Name"] = frame[account_column].map(clean_text)
@@ -355,9 +423,13 @@ def prepare_source(frame: pd.DataFrame, source_type: str) -> pd.DataFrame:
         prepared["Parent Health System if available"] = frame[parent_column].map(clean_text)
     else:
         prepared["Parent Health System if available"] = ""
-    prepared["EHR"] = frame[ehr_column].map(clean_text) if ehr_column else ""
+    if ehr_column:
+        prepared["EHR"] = frame[ehr_column].map(lambda value: normalize_ehr_value(value, source_type))
+    else:
+        prepared["EHR"] = infer_ehr_from_sheet(frame, source_type)
     prepared["Status"] = frame[status_column].map(clean_text) if status_column else ""
     prepared["State"] = frame[state_column].map(clean_text) if state_column else ""
+    prepared["Market Size Signal"] = frame[size_column].map(clean_text) if size_column else ""
     prepared["Source File"] = frame.get("Source File", "")
     prepared["Source Tab"] = frame.get("Source Tab", "")
     prepared["Source Type"] = source_type
@@ -390,20 +462,31 @@ def score_account(row: pd.Series) -> pd.Series:
     new_epic = has_pattern(text, NEW_EPIC_PATTERN)
     epic_customer = bool(row["Existing Epic Customer"]) or new_epic
     non_epic_migration = bool(row["Non-Epic Migration Opportunity"])
+    known_non_epic_ehr = bool(row["Known Non-Epic EHR"])
     imprivata = bool(row["Imprivata Customer"])
     large_health_system = bool(row["Large Health System"])
     large_physician_group = bool(row["Large Physician Group"])
     front_door = bool(row["Front-Door Workflow Fit Signal"])
     security = bool(row["Security / Compliance Signal"])
     buyer_role = bool(row["Buyer Role Signal"])
+    market_size = float(row.get("Market Size Number", 0) or 0)
 
-    epic_status_points = 25 if epic_customer else 10 if non_epic_migration else 0
-    timing_points = 20 if new_epic else 10 if has_pattern(text, MIGRATION_PATTERN) else 0
-    enterprise_points = 15 if large_health_system else 12 if large_physician_group else min(int(row["Source Count"]) * 4, 8)
-    competitive_points = 15 if imprivata else 10 if has_pattern(text, re.compile(r"\b(?:duo|okta|ping|mfa|sso|single sign)\b", re.IGNORECASE)) else 0
-    front_door_points = 10 if front_door else 5 if epic_customer else 0
+    epic_status_points = 25 if epic_customer or known_non_epic_ehr else 15 if non_epic_migration else 0
+    timing_points = 20 if new_epic else 15 if known_non_epic_ehr else 10 if has_pattern(text, MIGRATION_PATTERN) else 0
+    if market_size >= 500:
+        enterprise_points = 25
+    elif market_size >= 200:
+        enterprise_points = 20
+    elif large_health_system:
+        enterprise_points = 18
+    elif large_physician_group or market_size >= 50:
+        enterprise_points = 15
+    else:
+        enterprise_points = min(int(row["Source Count"]) * 4, 8)
+    competitive_points = 20 if imprivata and (known_non_epic_ehr or epic_customer) else 15 if imprivata else 10 if has_pattern(text, re.compile(r"\b(?:duo|okta|ping|mfa|sso|single sign)\b", re.IGNORECASE)) else 0
+    front_door_points = 12 if known_non_epic_ehr or imprivata else 10 if front_door else 5 if epic_customer else 0
     security_points = 10 if security else 0
-    buyer_points = 5 if buyer_role else 3 if epic_customer or large_health_system else 0
+    buyer_points = 5 if buyer_role or known_non_epic_ehr or imprivata else 3 if epic_customer or large_health_system else 0
 
     score = (
         epic_status_points
@@ -572,18 +655,38 @@ def build_ranked_accounts_from_sources(sources: Iterable[SourceConfig]) -> tuple
     prepared: list[pd.DataFrame] = []
     skipped_sources: list[str] = []
 
+    processed_workbooks: set[str] = set()
+    processed_tabs = 0
+
     for source in source_list:
         try:
-            source_frame = read_all_tabs(source)
-            prepared_frame = prepare_source(source_frame, source.source_type)
+            source_frames = read_source_tabs(source)
         except ValueError as exc:
             skipped_sources.append(f"{source.label}: {exc}")
             continue
+        except Exception as exc:
+            skipped_sources.append(f"{source.label}: {exc}")
+            continue
 
-        if prepared_frame.empty:
+        if not source_frames:
             skipped_sources.append(f"{source.label}: no usable account rows found")
             continue
-        prepared.append(prepared_frame)
+
+        for source_frame in source_frames:
+            tab_name = first_frame_value(source_frame, "Source Tab") or "Unknown tab"
+            source_type = first_frame_value(source_frame, "Source Type") or source.source_type
+            try:
+                prepared_frame = prepare_source(source_frame, source_type)
+            except ValueError as exc:
+                skipped_sources.append(f"{source.label} / {tab_name}: {exc}")
+                continue
+
+            if prepared_frame.empty:
+                skipped_sources.append(f"{source.label} / {tab_name}: no usable account rows found")
+                continue
+            prepared.append(prepared_frame)
+            processed_workbooks.add(source.label)
+            processed_tabs += 1
 
     if not prepared:
         details = f" Skipped sources: {' | '.join(skipped_sources[:3])}" if skipped_sources else ""
@@ -602,6 +705,8 @@ def build_ranked_accounts_from_sources(sources: Iterable[SourceConfig]) -> tuple
         + combined["EHR"].fillna("").astype(str)
         + " "
         + combined["Status"].fillna("").astype(str)
+        + " "
+        + combined["Market Size Signal"].fillna("").astype(str)
         + " "
         + combined["Row Text"].fillna("").astype(str)
     ).str.lower()
@@ -622,6 +727,7 @@ def build_ranked_accounts_from_sources(sources: Iterable[SourceConfig]) -> tuple
         EHR=("EHR", collapse_values),
         Status=("Status", collapse_values),
         State=("State", collapse_values),
+        Market_Size_Signal=("Market Size Signal", collapse_values),
         Sources=("Source File", collapse_values),
         Source_Tabs=("Source Tab", collapse_values),
         Source_Types=("Source Type", collapse_values),
@@ -640,6 +746,7 @@ def build_ranked_accounts_from_sources(sources: Iterable[SourceConfig]) -> tuple
             "Source_Types": "Source Types",
             "Source_Count": "Source Count",
             "Source_Tab_Count": "Source Tab Count",
+            "Market_Size_Signal": "Market Size Signal",
             "Data_Text": "Data Text",
             "Source_Text": "Source Text",
             "Account_Name_Variants": "Account Name Variants",
@@ -649,19 +756,25 @@ def build_ranked_accounts_from_sources(sources: Iterable[SourceConfig]) -> tuple
     data_text = ranked["Data Text"].fillna("")
     source_text = ranked["Source Text"].fillna("")
     source_types = ranked["Source Types"].fillna("")
+    ehr_text = ranked["EHR"].fillna("")
     known_epic_source = source_types.str.contains("EPIC Organization List", case=False, na=False)
     explicit_epic_signal = data_text.str.contains(r"\bepic\b", case=False, regex=True, na=False)
+    known_ehr_source = source_types.str.contains("Health Systems by EHR", case=False, na=False)
+    known_non_epic_ehr = known_ehr_source & ehr_text.str.contains(NON_EPIC_EHR_PATTERN, na=False) & ~ehr_text.str.contains(r"\bepic\b", case=False, regex=True, na=False)
 
     ranked["New Epic System"] = data_text.str.contains(NEW_EPIC_PATTERN, na=False) | source_text.str.contains(NEW_EPIC_PATTERN, na=False)
     ranked["Existing Epic Customer"] = (known_epic_source | explicit_epic_signal) & ~ranked["New Epic System"]
     ranked["Imprivata Customer"] = source_text.str.contains(IMPRIVATA_PATTERN, na=False)
+    ranked["Market Size Number"] = ranked["Market Size Signal"].map(numeric_max_from_text)
     ranked["Large Health System"] = source_text.str.contains(LARGE_HEALTH_SYSTEM_PATTERN, na=False)
-    ranked["Large Physician Group"] = source_text.str.contains(LARGE_PHYSICIAN_GROUP_PATTERN, na=False)
+    ranked["Large Physician Group"] = source_text.str.contains(LARGE_PHYSICIAN_GROUP_PATTERN, na=False) | ranked["Market Size Number"].ge(50)
+    ranked["Known Non-Epic EHR"] = known_non_epic_ehr
     ranked["Non-Epic Migration Opportunity"] = (
         ~ranked["Existing Epic Customer"]
         & ~ranked["New Epic System"]
         & (
-            source_text.str.contains(NON_EPIC_EHR_PATTERN, na=False)
+            ranked["Known Non-Epic EHR"]
+            | source_text.str.contains(NON_EPIC_EHR_PATTERN, na=False)
             | source_text.str.contains(MIGRATION_PATTERN, na=False)
         )
     )
@@ -714,6 +827,7 @@ def build_ranked_accounts_from_sources(sources: Iterable[SourceConfig]) -> tuple
         "Imprivata Customer",
         "Large Health System",
         "Large Physician Group",
+        "Known Non-Epic EHR",
         "Non-Epic Migration Opportunity",
         "Front-Door Workflow Fit Signal",
         "Security / Compliance Signal",
@@ -728,6 +842,8 @@ def build_ranked_accounts_from_sources(sources: Iterable[SourceConfig]) -> tuple
         "EHR",
         "Status",
         "State",
+        "Market Size Signal",
+        "Market Size Number",
         "Sources",
         "Source Tabs",
         "Source Types",
@@ -737,8 +853,9 @@ def build_ranked_accounts_from_sources(sources: Iterable[SourceConfig]) -> tuple
 
     summary = {
         "uploaded_workbooks": int(len(source_list)),
-        "processed_workbooks": int(len(prepared)),
-        "skipped_workbooks": int(len(skipped_sources)),
+        "processed_workbooks": int(len(processed_workbooks)),
+        "processed_tabs": int(processed_tabs),
+        "skipped_tabs": int(len(skipped_sources)),
         "total_accounts": int(len(ranked)),
         "tier_1": int((ranked["Tier"] == "Tier 1").sum()),
         "tier_2": int((ranked["Tier"] == "Tier 2").sum()),
@@ -768,7 +885,8 @@ def scoring_summary_frame(summary: dict[str, int]) -> pd.DataFrame:
         [
             ("Uploaded Workbooks", summary.get("uploaded_workbooks", 0)),
             ("Processed Workbooks", summary.get("processed_workbooks", 0)),
-            ("Skipped Workbooks", summary.get("skipped_workbooks", 0)),
+            ("Processed Tabs", summary.get("processed_tabs", 0)),
+            ("Skipped Tabs", summary.get("skipped_tabs", 0)),
             ("Total Accounts", summary["total_accounts"]),
             ("Tier 1 Targets", summary["tier_1"]),
             ("Tier 2 Targets", summary["tier_2"]),
@@ -791,9 +909,9 @@ def scoring_model_frame() -> pd.DataFrame:
         [
             ("Epic Status", 25),
             ("Timing Trigger", 20),
-            ("Enterprise Value", 15),
-            ("Imprivata / Competitive Signal", 15),
-            ("Front-Door Workflow Fit", 10),
+            ("Enterprise Value", 25),
+            ("Imprivata / Competitive Signal", 20),
+            ("Front-Door Workflow Fit", 12),
             ("Security / Compliance Urgency", 10),
             ("Buyer Role Fit", 5),
         ],
